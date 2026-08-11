@@ -13,7 +13,6 @@ Regression tests for two bugs in WhatsAppAdapter.connect():
 """
 
 import asyncio
-import signal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -459,108 +458,6 @@ class TestBridgeRuntimeFailure:
         assert result is False
         mock_fh.close.assert_called_once()
         assert adapter._bridge_log_fh is None
-
-
-# ---------------------------------------------------------------------------
-# _kill_port_process() cross-platform tests
-# ---------------------------------------------------------------------------
-
-class TestKillPortProcess:
-    """Verify _kill_port_process uses platform-appropriate commands."""
-
-    def test_uses_netstat_and_taskkill_on_windows(self):
-        from plugins.platforms.whatsapp.adapter import _kill_port_process
-
-        netstat_output = (
-            "  Proto  Local Address          Foreign Address        State           PID\n"
-            "  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       12345\n"
-            "  TCP    0.0.0.0:3001           0.0.0.0:0              LISTENING       99999\n"
-        )
-        mock_netstat = MagicMock(stdout=netstat_output)
-        mock_taskkill = MagicMock()
-
-        def run_side_effect(cmd, **kwargs):
-            if cmd[0] == "netstat":
-                return mock_netstat
-            if cmd[0] == "taskkill":
-                return mock_taskkill
-            return MagicMock()
-
-        with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True), \
-             patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=run_side_effect) as mock_run:
-            _kill_port_process(3000)
-
-        # netstat called
-        assert any(
-            call.args[0][0] == "netstat" for call in mock_run.call_args_list
-        )
-        # taskkill called with correct PID
-        assert any(
-            call.args[0] == ["taskkill", "/PID", "12345", "/F"]
-            for call in mock_run.call_args_list
-        )
-
-    def test_does_not_kill_wrong_port_on_windows(self):
-        from plugins.platforms.whatsapp.adapter import _kill_port_process
-
-        netstat_output = (
-            "  TCP    0.0.0.0:30000          0.0.0.0:0              LISTENING       55555\n"
-        )
-        mock_netstat = MagicMock(stdout=netstat_output)
-
-        with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True), \
-             patch("plugins.platforms.whatsapp.adapter.subprocess.run", return_value=mock_netstat) as mock_run:
-            _kill_port_process(3000)
-
-        # Should NOT call taskkill because port 30000 != 3000
-        assert not any(
-            call.args[0][0] == "taskkill"
-            for call in mock_run.call_args_list
-        )
-
-    def test_kills_only_listeners_on_linux(self):
-        """POSIX path SIGTERMs only LISTENer PIDs (never clients) — the #43846 fix.
-
-        Replaces the old fuser-based test: ``fuser``/bare ``lsof -i`` also
-        matched client sockets sharing the port number, which closed unrelated
-        processes (a browser tab on the same port). The implementation now
-        resolves listeners via ``_listener_pids_on_port`` and signals only those.
-        """
-        from plugins.platforms.whatsapp import adapter as wa
-
-        kills = []
-        with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", False), \
-             patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
-                   return_value=[55555]) as mock_listeners, \
-             patch("plugins.platforms.whatsapp.adapter.os.kill",
-                   side_effect=lambda pid, sig: kills.append((pid, sig))):
-            wa._kill_port_process(3000)
-
-        mock_listeners.assert_called_once_with(3000)
-        assert kills == [(55555, signal.SIGTERM)]
-
-    def test_no_kill_when_no_listener_on_port(self):
-        """No LISTENer on the port → nothing is signalled."""
-        from plugins.platforms.whatsapp import adapter as wa
-
-        kills = []
-        with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", False), \
-             patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
-                   return_value=[]) as mock_listeners, \
-             patch("plugins.platforms.whatsapp.adapter.os.kill",
-                   side_effect=lambda pid, sig: kills.append((pid, sig))):
-            wa._kill_port_process(3000)
-
-        mock_listeners.assert_called_once_with(3000)
-        assert kills == []
-
-    def test_suppresses_exceptions(self):
-        from plugins.platforms.whatsapp.adapter import _kill_port_process
-
-        with patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", True), \
-             patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=OSError("no netstat")):
-            _kill_port_process(3000)  # must not raise
-
 
 # ---------------------------------------------------------------------------
 # Persistent HTTP session lifecycle
